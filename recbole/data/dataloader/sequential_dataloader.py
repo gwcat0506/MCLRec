@@ -138,6 +138,13 @@ class SequentialDataLoader(AbstractDataLoader):
             reordered_item_seq = torch.tensor(reordered_item_seq, dtype=torch.long)
             return reordered_item_seq, length
         
+        def item_reverse(seq, length):
+            # 첫 length 만큼의 순서를 뒤집고, 나머지는 0으로 패딩
+            rev_item_seq = torch.zeros_like(seq)
+            rev_part = torch.flip(seq[:length], dims=[0])
+            rev_item_seq[:length] = rev_part
+            return rev_item_seq, length
+        
         seqs = cur_data['item_id_list']
         lengths = cur_data['item_length']
 
@@ -145,9 +152,10 @@ class SequentialDataLoader(AbstractDataLoader):
         aug_len1 = []
         aug_seq2 = []
         aug_len2 = []
+        
         for seq, length in zip(seqs, lengths):
             if length > 1:
-                switch = random.sample(range(3), k=2)
+                switch = random.sample(range(4), k=2)
             else:
                 switch = [3, 3]
                 aug_seq = seq
@@ -158,6 +166,8 @@ class SequentialDataLoader(AbstractDataLoader):
                 aug_seq, aug_len = item_mask(seq, length)
             elif switch[0] == 2:
                 aug_seq, aug_len = item_reorder(seq, length)
+            else:
+                aug_seq, aug_len = item_reverse(seq, length) # reverse
     
             aug_seq1.append(aug_seq)
             aug_len1.append(aug_len)
@@ -168,6 +178,8 @@ class SequentialDataLoader(AbstractDataLoader):
                 aug_seq, aug_len = item_mask(seq, length)
             elif switch[1] == 2:
                 aug_seq, aug_len = item_reorder(seq, length)
+            else:
+                aug_seq, aug_len = item_reverse(seq, length) # reverse
     
             aug_seq2.append(aug_seq)
             aug_len2.append(aug_len)
