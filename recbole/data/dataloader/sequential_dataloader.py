@@ -117,19 +117,22 @@ class SequentialDataLoader(AbstractDataLoader):
 
         def item_mask(seq, length, gamma=self.config['mask_ratio']):
             num_mask = math.floor(length * gamma)
-            masked = seq.clone()
-            mask_indices = random.sample(range(length), k=num_mask)
-            masked[mask_indices] = 0
-            return masked, torch.tensor(length, dtype=torch.long)
+            mask_index = random.sample(range(length), k=num_mask)
+            masked_item_seq = seq.tolist()
+            masked_item_seq=torch.tensor(masked_item_seq,dtype=torch.long)
+            masked_item_seq[mask_index] =0
+            return masked_item_seq, length
 
         def item_reorder(seq, length, beta=self.config['reorder_ratio']):
             num_reorder = math.floor(length * beta)
-            start = random.randint(0, length - num_reorder)
-            reordered = seq.tolist()
-            segment = reordered[start:start + num_reorder]
-            random.shuffle(segment)
-            new_list = reordered[:start] + segment + reordered[start + num_reorder:]
-            return torch.tensor(new_list, dtype=torch.long), torch.tensor(length, dtype=torch.long)
+            reorder_begin = random.randint(0, length - num_reorder)
+            reordered_item_seq = seq.tolist()
+            subsequence = reordered_item_seq[reorder_begin:reorder_begin + num_reorder]
+            random.shuffle(subsequence)
+            reordered_item_seq = reordered_item_seq[:reorder_begin] + subsequence + reordered_item_seq[
+                                                                                    reorder_begin + num_reorder:]
+            reordered_item_seq = torch.tensor(reordered_item_seq, dtype=torch.long)
+            return reordered_item_seq, length
 
         if use_reverse:
             def item_reverse(seq, length):
