@@ -36,24 +36,20 @@ class SequentialDataLoader(AbstractDataLoader):
         self.iid_field = dataset.iid_field
 
         self.max_item_list_len = config['MAX_ITEM_LIST_LENGTH']
-
         list_suffix = config['LIST_SUFFIX']
         for field in dataset.inter_feat:
             if field != self.uid_field:
                 list_field = field + list_suffix
                 setattr(self, f'{field}_list_field', list_field)
                 ftype = dataset.field2type[field]
-
                 if ftype in [FeatureType.TOKEN, FeatureType.TOKEN_SEQ]:
                     list_ftype = FeatureType.TOKEN_SEQ
                 else:
                     list_ftype = FeatureType.FLOAT_SEQ
-
                 if ftype in [FeatureType.TOKEN_SEQ, FeatureType.FLOAT_SEQ]:
                     list_len = (self.max_item_list_len, dataset.field2seqlen[field])
                 else:
                     list_len = self.max_item_list_len
-
                 dataset.set_field_property(list_field, list_ftype, FeatureSource.INTERACTION, list_len)
 
         self.item_list_length_field = config['ITEM_LIST_LENGTH_FIELD']
@@ -64,17 +60,16 @@ class SequentialDataLoader(AbstractDataLoader):
         self.target_index = dataset.target_index
         self.item_list_length = dataset.item_list_length
         self.pre_processed_data = None
-        
         self.static_item_id_list = None
         self.static_item_length = None
-        
-        # semantic augmentation
         self.phase = phase
 
         super().__init__(config, dataset, batch_size=batch_size, dl_format=dl_format, shuffle=shuffle)
 
     def data_preprocess(self):
-        self.pre_processed_data = self.augmentation(self.item_list_index, self.target_index, self.item_list_length)
+        self.pre_processed_data = self.augmentation(self.item_list_index,
+                                                    self.target_index,
+                                                    self.item_list_length)
 
     @property
     def pr_end(self):
@@ -89,6 +84,7 @@ class SequentialDataLoader(AbstractDataLoader):
             self.item_list_length = self.item_list_length[new_index]
         else:
             self.pre_processed_data.shuffle()
+
     def _next_batch_data(self):
         cur_data = self._get_processed_data(slice(self.pr, self.pr + self.step))
         self.pr += self.step
@@ -96,113 +92,95 @@ class SequentialDataLoader(AbstractDataLoader):
 
     def _get_processed_data(self, index):
         if self.real_time:
-            cur_data = self.augmentation(
-                self.item_list_index[index], self.target_index[index], self.item_list_length[index]
-            )
+            cur_data = self.augmentation(self.item_list_index[index],
+                                        self.target_index[index],
+                                        self.item_list_length[index])
         else:
             cur_data = self.pre_processed_data[index]
-        
-        # normal code speeds up by removing augmentation for validation and test
         if self.config['SSL_AUG'] == 'MCLRec' and self.phase == 'train':
             self.mclrec_aug(cur_data)
         return cur_data
-    
 
     def mclrec_aug(self, cur_data):
+        use_reverse = self.config['use_reverse'] if 'use_reverse' in self.config else False
+        # print("reverse 사용 확인하기 : ",use_reverse)
+
         def item_crop(seq, length, eta=1-self.config['crop_ratio']):
-            num_left = math.floor(length * eta)
+            num_left = max(1, math.floor(length * eta))
             crop_begin = random.randint(0, length - num_left)
-            croped_item_seq = np.zeros(seq.shape[0])
+            cropped = torch.zeros_like(seq)
             if crop_begin + num_left < seq.shape[0]:
-                croped_item_seq[:num_left] = seq[crop_begin:crop_begin + num_left]
+                cropped[:num_left] = seq[crop_begin:crop_begin + num_left]
             else:
-                croped_item_seq[:num_left] = seq[crop_begin:]
-            return torch.tensor(croped_item_seq, dtype=torch.long), torch.tensor(num_left, dtype=torch.long)
+                cropped[:num_left] = seq[crop_begin:]
+            return cropped, torch.tensor(num_left, dtype=torch.long)
 
         def item_mask(seq, length, gamma=self.config['mask_ratio']):
             num_mask = math.floor(length * gamma)
-            mask_index = random.sample(range(length), k=num_mask)
-            masked_item_seq = seq.tolist()
-            masked_item_seq=torch.tensor(masked_item_seq,dtype=torch.long)
-            masked_item_seq[mask_index] =0
-            return masked_item_seq, length
+            masked = seq.clone()
+            mask_indices = random.sample(range(length), k=num_mask)
+            masked[mask_indices] = 0
+            return masked, torch.tensor(length, dtype=torch.long)
 
         def item_reorder(seq, length, beta=self.config['reorder_ratio']):
             num_reorder = math.floor(length * beta)
-            reorder_begin = random.randint(0, length - num_reorder)
-            reordered_item_seq = seq.tolist()
-            subsequence = reordered_item_seq[reorder_begin:reorder_begin + num_reorder]
-            random.shuffle(subsequence)
-            reordered_item_seq = reordered_item_seq[:reorder_begin] + subsequence + reordered_item_seq[
-                                                                                    reorder_begin + num_reorder:]
-            reordered_item_seq = torch.tensor(reordered_item_seq, dtype=torch.long)
-            return reordered_item_seq, length
-        
-        def item_reverse(seq, length):
-            # 첫 length 만큼의 순서를 뒤집고, 나머지는 0으로 패딩
-            rev_item_seq = torch.zeros_like(seq)
-            rev_part = torch.flip(seq[:length], dims=[0])
-            rev_item_seq[:length] = rev_part
-            return rev_item_seq, length
-        
+            start = random.randint(0, length - num_reorder)
+            reordered = seq.tolist()
+            segment = reordered[start:start + num_reorder]
+            random.shuffle(segment)
+            new_list = reordered[:start] + segment + reordered[start + num_reorder:]
+            return torch.tensor(new_list, dtype=torch.long), torch.tensor(length, dtype=torch.long)
+
+        if use_reverse:
+            def item_reverse(seq, length):
+                rev = torch.zeros_like(seq)
+                rev_part = torch.flip(seq[:length], dims=[0])
+                rev[:length] = rev_part
+                # print("item_reverse 진행")
+                return rev, torch.tensor(length, dtype=torch.long)
+
         seqs = cur_data['item_id_list']
         lengths = cur_data['item_length']
 
-        aug_seq1 = []
-        aug_len1 = []
-        aug_seq2 = []
-        aug_len2 = []
-        
+        aug_seq1, aug_len1 = [], []
+        aug_seq2, aug_len2 = [], []
         for seq, length in zip(seqs, lengths):
-            if length > 1:
-                switch = random.sample(range(4), k=2)
-            else:
-                switch = [3, 3]
-                aug_seq = seq
-                aug_len = length
-            if switch[0] == 0:
-                aug_seq, aug_len = item_crop(seq, length)
-            elif switch[0] == 1:
-                aug_seq, aug_len = item_mask(seq, length)
-            elif switch[0] == 2:
-                aug_seq, aug_len = item_reorder(seq, length)
-            else:
-                aug_seq, aug_len = item_reverse(seq, length) # reverse
-    
-            aug_seq1.append(aug_seq)
-            aug_len1.append(aug_len)
-    
-            if switch[1] == 0:
-                aug_seq, aug_len = item_crop(seq, length)
-            elif switch[1] == 1:
-                aug_seq, aug_len = item_mask(seq, length)
-            elif switch[1] == 2:
-                aug_seq, aug_len = item_reorder(seq, length)
-            else:
-                aug_seq, aug_len = item_reverse(seq, length) # reverse
-    
-            aug_seq2.append(aug_seq)
-            aug_len2.append(aug_len)
-        
-        cur_data.update(Interaction({'aug1': torch.stack(aug_seq1), 'aug_len1': torch.stack(aug_len1),
-                                     'aug2': torch.stack(aug_seq2), 'aug_len2': torch.stack(aug_len2)}))
+            if length <= 1:
+                aug_seq1.append(seq.clone())
+                aug_len1.append(torch.tensor(length, dtype=torch.long))
+                aug_seq2.append(seq.clone())
+                aug_len2.append(torch.tensor(length, dtype=torch.long))
+                continue
+
+            max_op = 4 if use_reverse else 3
+            switch = random.sample(range(max_op), k=2)
+
+            for idx, aug_list, len_list in [(0, aug_seq1, aug_len1), (1, aug_seq2, aug_len2)]:
+                op = switch[idx]
+                if op == 0:
+                    a_seq, a_len = item_crop(seq, length)
+                elif op == 1:
+                    a_seq, a_len = item_mask(seq, length)
+                elif op == 2:
+                    a_seq, a_len = item_reorder(seq, length)
+                elif op == 3 and use_reverse:
+                    a_seq, a_len = item_reverse(seq, length)
+                else:
+                    a_seq, a_len = item_crop(seq, length)
+                aug_list.append(a_seq)
+                len_list.append(a_len)
+
+        cur_data.update(Interaction({
+            'aug1': torch.stack(aug_seq1),
+            'aug_len1': torch.stack(aug_len1),
+            'aug2': torch.stack(aug_seq2),
+            'aug_len2': torch.stack(aug_len2)
+        }))
 
     def augmentation(self, item_list_index, target_index, item_list_length):
-        """Data augmentation.
-
-        Args:
-            item_list_index (numpy.ndarray): the index of history items list in interaction.
-            target_index (numpy.ndarray): the index of items to be predicted in interaction.
-            item_list_length (numpy.ndarray): history list length.
-
-        Returns:
-            dict: the augmented data.
-        """
         new_length = len(item_list_index)
         new_data = self.dataset.inter_feat[target_index]
-        new_dict = {
-            self.item_list_length_field: torch.tensor(item_list_length),
-        }
+        new_dict = { self.item_list_length_field: torch.tensor(item_list_length) }
 
         for field in self.dataset.inter_feat:
             if field != self.uid_field:
@@ -212,10 +190,9 @@ class SequentialDataLoader(AbstractDataLoader):
                 list_ftype = self.dataset.field2type[list_field]
                 dtype = torch.int64 if list_ftype in [FeatureType.TOKEN, FeatureType.TOKEN_SEQ] else torch.float64
                 new_dict[list_field] = torch.zeros(shape, dtype=dtype)
-
                 value = self.dataset.inter_feat[field]
-                for i, (index, length) in enumerate(zip(item_list_index, item_list_length)):
-                    new_dict[list_field][i][:length] = value[index]
+                for i, (idx, length) in enumerate(zip(item_list_index, item_list_length)):
+                    new_dict[list_field][i][:length] = value[idx]
 
         new_data.update(Interaction(new_dict))
         return new_data
