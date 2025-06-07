@@ -103,17 +103,17 @@ class SequentialDataLoader(AbstractDataLoader):
 
     def mclrec_aug(self, cur_data):
         use_reverse = self.config['use_reverse'] if 'use_reverse' in self.config else False
-        # print("reverse 사용 확인하기 : ",use_reverse)
+        print("reverse 사용 확인하기 : ",use_reverse)
 
         def item_crop(seq, length, eta=1-self.config['crop_ratio']):
-            num_left = max(1, math.floor(length * eta))
+            num_left = math.floor(length * eta)
             crop_begin = random.randint(0, length - num_left)
-            cropped = torch.zeros_like(seq)
+            croped_item_seq = np.zeros(seq.shape[0])
             if crop_begin + num_left < seq.shape[0]:
-                cropped[:num_left] = seq[crop_begin:crop_begin + num_left]
+                croped_item_seq[:num_left] = seq[crop_begin:crop_begin + num_left]
             else:
-                cropped[:num_left] = seq[crop_begin:]
-            return cropped, torch.tensor(num_left, dtype=torch.long)
+                croped_item_seq[:num_left] = seq[crop_begin:]
+            return torch.tensor(croped_item_seq, dtype=torch.long), torch.tensor(num_left, dtype=torch.long)
 
         def item_mask(seq, length, gamma=self.config['mask_ratio']):
             num_mask = math.floor(length * gamma)
@@ -133,10 +133,12 @@ class SequentialDataLoader(AbstractDataLoader):
 
         if use_reverse:
             def item_reverse(seq, length):
+                # print("item_reverse 진행")
+                if length <= 1:
+                    return seq.clone(), torch.tensor(length, dtype=torch.long)
                 rev = torch.zeros_like(seq)
                 rev_part = torch.flip(seq[:length], dims=[0])
                 rev[:length] = rev_part
-                # print("item_reverse 진행")
                 return rev, torch.tensor(length, dtype=torch.long)
 
         seqs = cur_data['item_id_list']
